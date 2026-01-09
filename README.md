@@ -2,7 +2,7 @@
 **Osclass / Osclass Enterprise Plugin**
 
 **Author:** Van Isle Web Solutions  
-**Current Version:** 1.3.0  
+**Current Version:** 1.4.0  
 **License:** GPL-2.0-or-later  
 
 ---
