@@ -1,9 +1,9 @@
 <?php
 /*
 Plugin Name: Required Fields Manager
-Plugin URI:  https://example.com/
-Description: Lets admin choose which core fields are required on registration and item publish/edit + enforces profile completeness.
-Version:     1.3.0
+Plugin URI:  https://github.com/nootkan/required_fields_manager
+Description: Lets admin choose which core fields are required on registration and item publish/edit. Automatically syncs selected registration values into user profiles without enforcing profile completion.
+Version:     1.4.0
 Author:      Van Isle Web Solutions
 License:     GPL-2.0-or-later
 */
@@ -40,6 +40,7 @@ function rfm_configuration() {
 
 osc_register_plugin(osc_plugin_path(__FILE__), 'rfm_install');
 
+// Configure + uninstall hooks MUST be in index.php (not admin.php)
 if (defined('OC_ADMIN') && OC_ADMIN) {
     osc_add_hook(osc_plugin_path(__FILE__) . '_configure', 'rfm_configuration');
     osc_add_hook(osc_plugin_path(__FILE__) . '_uninstall', 'rfm_uninstall');
@@ -71,6 +72,7 @@ function rfm_defaults() {
         'item_category'    => 1,
         'item_region'      => 0,
         'item_city'        => 0,
+        'item_zip'         => 0,
         'item_contact'     => 0,
 
         // Seller type required for everyone (your choice B)
@@ -98,7 +100,6 @@ function rfm_save_settings($new) {
  * ===================================================== */
 
 function rfm_blank($v) {
-    // If it's an array, check if it has any non-empty values
     if (is_array($v)) {
         foreach ($v as $value) {
             if (trim((string)$value) !== '') {
@@ -107,15 +108,9 @@ function rfm_blank($v) {
         }
         return true;
     }
-
-    // Normal string check
     return trim((string)$v) === '';
 }
 
-/**
- * Store posted form values so the form repopulates after redirect.
- * Best-effort across forks.
- */
 function rfm_store_form_values($type) {
     if (!class_exists('Session')) { return; }
 
@@ -135,9 +130,6 @@ function rfm_store_form_values($type) {
     }
 }
 
-/**
- * Store "extra registration fields" to apply after Osclass creates the user.
- */
 function rfm_store_reg_extra($data) {
     if (!class_exists('Session')) { return; }
     try {
@@ -181,74 +173,58 @@ function rfm_fail($msg, $url, $formType = '') {
 }
 
 /* =====================================================
- * USER META (Seller Type)
+ * USER RECORD HELPERS (robust b_company read)
  * ===================================================== */
 
-function rfm_get_table_prefix() {
-    if (defined('DB_TABLE_PREFIX')) { return DB_TABLE_PREFIX; }
-    return 'oc_'; // fallback
-}
-
-function rfm_set_user_meta($userId, $name, $value) {
+function rfm_get_user_row_by_id($userId) {
     $userId = (int)$userId;
-    if ($userId <= 0 || $name === '') { return false; }
+    if ($userId <= 0) { return array(); }
 
-    // Try if Osclass provides helper functions (some forks do)
-    if (function_exists('osc_set_user_meta')) {
-        return (bool)osc_set_user_meta($userId, $name, $value);
-    }
-
-    // Best-effort direct SQL into t_user_meta (common across Osclass forks)
-    try {
-        if (!class_exists('DBConnectionClass')) { return false; }
-        $db = DBConnectionClass::newInstance()->getDb();
-        if (!is_object($db)) { return false; }
-
-        $table = rfm_get_table_prefix() . 't_user_meta';
-
-        // Escape best-effort
-        $nameEsc  = addslashes($name);
-        $valueEsc = addslashes((string)$value);
-
-        // Common schema: fk_i_user_id, s_name, s_value (unique on fk_i_user_id + s_name)
-        $sql = "INSERT INTO {$table} (fk_i_user_id, s_name, s_value)
-                VALUES ({$userId}, '{$nameEsc}', '{$valueEsc}')
-                ON DUPLICATE KEY UPDATE s_value = '{$valueEsc}'";
-
-        $db->query($sql);
-        return true;
-    } catch (Exception $e) {
-        return false;
-    }
-}
-
-function rfm_get_user_meta($userId, $name) {
-    $userId = (int)$userId;
-    if ($userId <= 0 || $name === '') { return ''; }
-
-    if (function_exists('osc_get_user_meta')) {
-        $v = osc_get_user_meta($userId, $name);
-        return is_string($v) ? $v : '';
-    }
-
-    try {
-        if (!class_exists('DBConnectionClass')) { return ''; }
-        $db = DBConnectionClass::newInstance()->getDb();
-        if (!is_object($db)) { return ''; }
-
-        $table = rfm_get_table_prefix() . 't_user_meta';
-        $nameEsc = addslashes($name);
-
-        $sql = "SELECT s_value FROM {$table} WHERE fk_i_user_id = {$userId} AND s_name = '{$nameEsc}' LIMIT 1";
-        $rs = $db->query($sql);
-        if (is_object($rs) && method_exists($rs, 'row')) {
-            $row = $rs->row();
-            if (is_array($row) && isset($row['s_value'])) {
-                return (string)$row['s_value'];
-            }
+    // Try osc_user() if it already matches the requested user
+    if (function_exists('osc_user')) {
+        $u = osc_user();
+        if (is_array($u) && isset($u['pk_i_id']) && (int)$u['pk_i_id'] === $userId) {
+            return $u;
         }
-    } catch (Exception $e) {}
-    return '';
+    }
+
+    // Best-effort via User model
+    if (class_exists('User') && method_exists('User', 'newInstance')) {
+        try {
+            $um = User::newInstance();
+            if (is_object($um) && method_exists($um, 'findByPrimaryKey')) {
+                $row = $um->findByPrimaryKey($userId);
+                return is_array($row) ? $row : array();
+            }
+        } catch (Exception $e) {}
+    }
+
+    return array();
+}
+
+function rfm_get_b_company_value($userId) {
+    $userId = (int)$userId;
+    if ($userId <= 0) { return null; }
+
+    // Try from user row
+    $row = rfm_get_user_row_by_id($userId);
+    if (isset($row['b_company'])) {
+        return $row['b_company'];
+    }
+
+    // Try osc_user_field
+    if (function_exists('osc_user_field')) {
+        $v = osc_user_field('b_company');
+
+        // IMPORTANT: some forks/themes return FALSE for "0"
+        if ($v === false) {
+            return 0;
+        }
+
+        return $v;
+    }
+
+    return null;
 }
 
 /* =====================================================
@@ -270,51 +246,85 @@ function rfm_update_user_profile_fields($userId, $fields) {
             }
         } catch (Exception $e) {}
     }
-
-    // If we can’t update, we silently skip (no fatal errors)
 }
 
 /* =====================================================
- * PROFILE COMPLETENESS CHECK
+ * PROFILE UPDATE VALIDATION (SERVER-SIDE)
  * ===================================================== */
 
-function rfm_profile_is_complete($userId, $settings) {
-    $userId = (int)$userId;
-    if ($userId <= 0) { return false; }
+function rfm_validate_profile_update() {
+    $settings = rfm_get_settings();
 
-    // Pull current user record (best-effort)
-    $user = array();
-    if (function_exists('osc_user')) {
-        $u = osc_user();
-        if (is_array($u)) { $user = $u; }
-    }
-    if (empty($user) && function_exists('osc_logged_user_id') && (int)osc_logged_user_id() === $userId) {
-        // Sometimes osc_user() is empty; that’s fine, we’ll just check meta and skip DB fields.
-    }
+    if (!function_exists('osc_logged_user_id')) { return; }
+    $uid = (int)osc_logged_user_id();
+    if ($uid <= 0) { return; }
 
-    // Seller type (meta) required?
+    // Seller type required? (validate SUBMITTED value)
     if (!empty($settings['item_seller_type'])) {
-        $stype = rfm_get_user_meta($userId, 'seller_type');
-        if (rfm_blank($stype)) { return false; }
+        $isCompany = Params::getParam('b_company');
+        $v = (string)$isCompany;
+        if ($v !== '0' && $v !== '1') {
+            rfm_fail(
+                __('Seller type is required.', RFM_PREF),
+                (function_exists('osc_user_profile_url') ? osc_user_profile_url() : osc_base_url(true)),
+                'user'
+            );
+        }
     }
 
-    // Location required?
+    // Region required? (profile form can submit regionId OR region)
     if (!empty($settings['item_region'])) {
-        $region = isset($user['s_region']) ? $user['s_region'] : '';
-        if (rfm_blank($region)) { return false; }
+        $regionId = Params::getParam('regionId');
+        $region   = Params::getParam('region');
+        if (rfm_blank($regionId) && rfm_blank($region)) {
+            rfm_fail(
+                __('Region is required.', RFM_PREF),
+                (function_exists('osc_user_profile_url') ? osc_user_profile_url() : osc_base_url(true)),
+                'user'
+            );
+        }
     }
+
+    // City required? (profile form can submit cityId OR city)
     if (!empty($settings['item_city'])) {
-        $city = isset($user['s_city']) ? $user['s_city'] : '';
-        if (rfm_blank($city)) { return false; }
+        $cityId = Params::getParam('cityId');
+        $city   = Params::getParam('city');
+        if (rfm_blank($cityId) && rfm_blank($city)) {
+            rfm_fail(
+                __('City is required.', RFM_PREF),
+                (function_exists('osc_user_profile_url') ? osc_user_profile_url() : osc_base_url(true)),
+                'user'
+            );
+        }
     }
 
-    // Optional: if admin chose to require address for registration, enforce it here too
+    // Address required?
     if (!empty($settings['reg_address'])) {
-        $addr = isset($user['s_address']) ? $user['s_address'] : '';
-        if (rfm_blank($addr)) { return false; }
-    }
+        $addr = Params::getParam('address');
+        if (rfm_blank($addr)) {
+            $addr = Params::getParam('s_address');
+        }
 
-    return true;
+        if (rfm_blank($addr)) {
+            rfm_fail(
+                __('Address is required.', RFM_PREF),
+                (function_exists('osc_user_profile_url') ? osc_user_profile_url() : osc_base_url(true)),
+                'user'
+            );
+        }
+    }
+	
+	// Postal code required?
+    if (!empty($settings['item_zip'])) {
+        $zip = Params::getParam('zip');
+        if (rfm_blank($zip)) {
+            rfm_fail(
+                __('Postal code is required.', RFM_PREF),
+                (function_exists('osc_user_profile_url') ? osc_user_profile_url() : osc_base_url(true)),
+                'user'
+            );
+        }
+    }
 }
 
 /* =====================================================
@@ -322,12 +332,16 @@ function rfm_profile_is_complete($userId, $settings) {
  * ===================================================== */
 
 function rfm_init_validate() {
-    if (defined('OC_ADMIN') && OC_ADMIN) { return; }
+    if (defined('OC_ADMIN') && OC_ADMIN) {
+        return;
+    }
 
     $page   = Params::getParam('page');
     $action = Params::getParam('action');
 
-    // Registration submit
+    /* ===============================
+     * REGISTRATION SUBMIT
+     * =============================== */
     if (
         ($page === 'register' && $action === 'register_post') ||
         ($page === 'user' && $action === 'register_post')
@@ -336,22 +350,22 @@ function rfm_init_validate() {
         return;
     }
 
-    // Item post/edit submit
+    /* ===============================
+     * PROFILE UPDATE (LOGGED-IN USERS)
+     * =============================== */
+    if ($page === 'user' && $action === 'profile_post') {
+        rfm_validate_profile_update();
+        return;
+    }
+
+    /* ===============================
+     * ITEM POST / EDIT (GUESTS + USERS)
+     * =============================== */
     if (
         ($page === 'item' || $page === 'items') &&
         ($action === 'item_add_post' || $action === 'item_edit_post')
     ) {
-
-        // Enforce profile completeness for logged-in users BEFORE allowing post/edit
-        $settings = rfm_get_settings();
-        if (function_exists('osc_is_web_user_logged_in') && osc_is_web_user_logged_in()) {
-            $uid = function_exists('osc_logged_user_id') ? (int)osc_logged_user_id() : 0;
-            if ($uid > 0 && !rfm_profile_is_complete($uid, $settings)) {
-                $url = function_exists('osc_user_profile_url') ? osc_user_profile_url() : osc_base_url(true);
-                rfm_fail(__('Please complete your profile (including Seller Type and Location) before posting.', RFM_PREF), $url, 'user');
-            }
-        }
-
+        // ✅ Validate ONLY what is submitted on the item form
         rfm_validate_item($action);
         return;
     }
@@ -381,7 +395,6 @@ function rfm_validate_registration() {
         }
     }
 
-    // Optional location checks if you enable them in admin
     $locChecks = array(
         'reg_country'   => array('countryId', __('Country', RFM_PREF), 'country'),
         'reg_region'    => array('regionId', __('Region', RFM_PREF), 'region'),
@@ -406,14 +419,14 @@ function rfm_validate_registration() {
 
     // Seller type required on registration?
     if (!empty($s['reg_seller_type'])) {
-        $stype = Params::getParam('sellerType');
-        if (rfm_blank($stype)) {
+        $stype = Params::getParam('b_company');
+        $v = (string)$stype;
+        if ($v !== '0' && $v !== '1') {
             $url = function_exists('osc_register_account_url') ? osc_register_account_url() : osc_base_url(true);
             rfm_fail(__('Seller type is required.', RFM_PREF), $url, 'user');
         }
     }
 
-    // Store extra fields to apply AFTER Osclass creates the user
     $extra = array(
         'countryId'  => Params::getParam('countryId'),
         'region'     => Params::getParam('region'),
@@ -423,19 +436,75 @@ function rfm_validate_registration() {
         'cityArea'   => Params::getParam('cityArea'),
         'zip'        => Params::getParam('zip'),
         'address'    => Params::getParam('s_address'),
-        'sellerType' => Params::getParam('sellerType'),
+        'b_company'  => Params::getParam('b_company'),
         'phone'      => Params::getParam('s_phone_mobile'),
     );
     rfm_store_reg_extra($extra);
 }
 
 /* =====================================================
- * ITEM VALIDATION (includes Seller Type required for everyone)
+ * ITEM VALIDATION
  * ===================================================== */
 
 function rfm_validate_item($action) {
     $s = rfm_get_settings();
 
+    /* ===============================
+     * PROFILE COMPLETION CHECK (LOGGED-IN USERS ONLY)
+     * =============================== */
+    if (function_exists('osc_is_web_user_logged_in') && osc_is_web_user_logged_in()) {
+        $uid = (int)osc_logged_user_id();
+        $userRow = rfm_get_user_row_by_id($uid);
+        
+        $missingFields = array();
+
+        // Check seller type
+        if (!empty($s['item_seller_type'])) {
+            $isCompany = rfm_get_b_company_value($uid);
+            $v = (string)$isCompany;
+            if ($v !== '0' && $v !== '1') {
+                $missingFields[] = __('Seller type', RFM_PREF);
+            }
+        }
+
+        // Check region
+        if (!empty($s['item_region'])) {
+            $region = isset($userRow['s_region']) ? $userRow['s_region'] : '';
+            if (rfm_blank($region)) {
+                $missingFields[] = __('Region', RFM_PREF);
+            }
+        }
+
+        // Check city
+        if (!empty($s['item_city'])) {
+            $city = isset($userRow['s_city']) ? $userRow['s_city'] : '';
+            if (rfm_blank($city)) {
+                $missingFields[] = __('City', RFM_PREF);
+            }
+        }
+
+        // Check zip
+        if (!empty($s['item_zip'])) {
+            $zip = isset($userRow['s_zip']) ? $userRow['s_zip'] : '';
+            if (rfm_blank($zip)) {
+                $missingFields[] = __('Postal code', RFM_PREF);
+            }
+        }
+
+        // If any required fields are missing, redirect to profile
+        if (!empty($missingFields)) {
+            $fieldsList = implode(', ', $missingFields);
+            rfm_fail(
+                sprintf(__('Please complete your profile first. Missing required fields: %s', RFM_PREF), $fieldsList),
+                osc_user_profile_url(),
+                'item'
+            );
+        }
+    }
+
+    /* ===============================
+     * FORM FIELD VALIDATION
+     * =============================== */
     $checks = array();
 
     if (!empty($s['item_title'])) {
@@ -456,13 +525,34 @@ function rfm_validate_item($action) {
     if (!empty($s['item_city'])) {
         $checks[] = array('cityId', __('City', RFM_PREF), 'city');
     }
-
-    // Seller type required for everyone (B)
-    if (!empty($s['item_seller_type'])) {
-        $checks[] = array('sellerType', __('Seller type', RFM_PREF));
+    if (!empty($s['item_zip'])) {
+        $checks[] = array('zip', __('Zip code', RFM_PREF), 'zip');
     }
 
-    if (!empty($s['item_contact'])) {
+    /* ===============================
+     * SELLER TYPE REQUIRED (GUESTS ONLY)
+     * =============================== */
+    if (!empty($s['item_seller_type'])) {
+        // Guests: validate from FORM POST (theme uses sellerType: individual/business)
+        if (!(function_exists('osc_is_web_user_logged_in') && osc_is_web_user_logged_in())) {
+            $stype = Params::getParam('sellerType');
+
+            if ($stype !== 'individual' && $stype !== 'business') {
+                rfm_fail(
+                    __('Seller type is required.', RFM_PREF),
+                    osc_item_post_url(),
+                    'item'
+                );
+            }
+
+            // Normalize guest value to an internal b_company equivalent (0/1) for consistency.
+            // NOTE: Guests do not have a user profile to store this into.
+            $guestCompany = ($stype === 'business') ? 1 : 0;
+        }
+    }
+
+    // Only validate contact fields for GUESTS (logged-in users don't have these fields on the form)
+    if (!empty($s['item_contact']) && !(function_exists('osc_is_web_user_logged_in') && osc_is_web_user_logged_in())) {
         $checks[] = array('contactName', __('Contact name', RFM_PREF), 'yourName');
         $checks[] = array('contactEmail', __('Contact email', RFM_PREF), 'yourEmail');
     }
@@ -493,64 +583,103 @@ function rfm_validate_item($action) {
         }
     }
 
-    // If logged in, also persist seller type into user meta immediately (so it "sticks")
+    // If logged in, persist seller type into the USER record (b_company) immediately
+    // (Only works if the item form actually submits b_company, which many themes do not.)
     if (!empty($s['item_seller_type']) && function_exists('osc_is_web_user_logged_in') && osc_is_web_user_logged_in()) {
         $uid = function_exists('osc_logged_user_id') ? (int)osc_logged_user_id() : 0;
-        $stype = Params::getParam('sellerType');
-        if ($uid > 0 && !rfm_blank($stype)) {
-            rfm_set_user_meta($uid, 'seller_type', $stype);
+        $stype = Params::getParam('b_company');
+        $v = (string)$stype;
+
+        if ($uid > 0 && ($v === '0' || $v === '1')) {
+            rfm_update_user_profile_fields($uid, array('b_company' => (int)$stype));
         }
     }
 }
 
 /* =====================================================
  * APPLY REGISTRATION EXTRA FIELDS AFTER USER IS CREATED
- * We hook multiple names to be compatible across forks.
  * ===================================================== */
 
 function rfm_after_user_register_apply_profile() {
-    // Determine user id best-effort
     $uid = 0;
+
     if (function_exists('osc_logged_user_id')) {
-        $uid = (int)osc_logged_user_id();
+        $uid = (int) osc_logged_user_id();
     }
     if ($uid <= 0 && function_exists('osc_user_id')) {
-        $uid = (int)osc_user_id();
+        $uid = (int) osc_user_id();
     }
-    if ($uid <= 0) { return; }
+    if ($uid <= 0) {
+        return;
+    }
 
     $extra = rfm_get_reg_extra();
-    if (empty($extra)) { return; }
+    if (empty($extra)) {
+        return;
+    }
 
     $fields = array();
 
-    // These field names match common Osclass user table columns
-    if (!rfm_blank($extra['address']))  { $fields['s_address'] = $extra['address']; }
-    if (!rfm_blank($extra['city']))     { $fields['s_city'] = $extra['city']; }
-    if (!rfm_blank($extra['region']))   { $fields['s_region'] = $extra['region']; }
-    if (!rfm_blank($extra['cityArea'])) { $fields['s_city_area'] = $extra['cityArea']; }
-    if (!rfm_blank($extra['zip']))      { $fields['s_zip'] = $extra['zip']; }
-    if (!rfm_blank($extra['phone']))    { $fields['s_phone_mobile'] = $extra['phone']; }
+    // Address
+    if (!rfm_blank($extra['address'])) {
+        $fields['s_address'] = $extra['address'];
+    }
 
-    // Country may be stored as code or name depending on fork; we try common column
+    // Region (name first, fallback from regionId)
+    if (!rfm_blank($extra['region'])) {
+        $fields['s_region'] = $extra['region'];
+    } elseif (!rfm_blank($extra['regionId']) && class_exists('Region')) {
+        $r = Region::newInstance()->findByPrimaryKey((int)$extra['regionId']);
+        if (is_array($r) && isset($r['s_name'])) {
+            $fields['s_region'] = $r['s_name'];
+        }
+    }
+
+    // City (name first, fallback from cityId)
+    if (!rfm_blank($extra['city'])) {
+        $fields['s_city'] = $extra['city'];
+    } elseif (!rfm_blank($extra['cityId']) && class_exists('City')) {
+        $c = City::newInstance()->findByPrimaryKey((int)$extra['cityId']);
+        if (is_array($c) && isset($c['s_name'])) {
+            $fields['s_city'] = $c['s_name'];
+        }
+    }
+
+    // City Area
+    if (!rfm_blank($extra['cityArea'])) {
+        $fields['s_city_area'] = $extra['cityArea'];
+    }
+
+    // Postal Code
+    if (!rfm_blank($extra['zip'])) {
+        $fields['s_zip'] = $extra['zip'];
+    }
+
+    // Phone
+    if (!rfm_blank($extra['phone'])) {
+        $fields['s_phone_mobile'] = $extra['phone'];
+    }
+
+    // Country
     if (!rfm_blank($extra['countryId'])) {
-        // Some forks use fk_c_country_code; some store s_country. We try s_country as safest.
         $fields['s_country'] = $extra['countryId'];
+    }
+
+    // Seller type (core Osclass field)
+    if (isset($extra['b_company'])) {
+        $v = (string)$extra['b_company'];
+        if ($v === '0' || $v === '1') {
+            $fields['b_company'] = (int)$v;
+        }
     }
 
     if (!empty($fields)) {
         rfm_update_user_profile_fields($uid, $fields);
     }
 
-    // Seller type -> user meta
-    if (!rfm_blank($extra['sellerType'])) {
-        rfm_set_user_meta($uid, 'seller_type', $extra['sellerType']);
-    }
-
     rfm_clear_reg_extra();
 }
 
-// Hook several common names (only one needs to exist)
 osc_add_hook('user_register_completed', 'rfm_after_user_register_apply_profile');
 osc_add_hook('register_completed', 'rfm_after_user_register_apply_profile');
 osc_add_hook('after_user_register', 'rfm_after_user_register_apply_profile');
