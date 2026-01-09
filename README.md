@@ -13,12 +13,11 @@ Required Fields Manager is a server-side enforcement plugin for Osclass and Oscl
 
 - Define which registration fields are mandatory
 - Define which listing publish/edit fields are mandatory
-- Enforce profile completeness before users can post listings
 - Persist registration and listing form data into the user profile
 - Enforce and store Seller Type (Individual / Business) consistently
 - Maintain compatibility across Osclass forks (8.x, Enterprise 3.x)
 
-The plugin exists to solve a long-standing Osclass issue where users post listings without completing their profiles, making moderation, filtering, and monetization difficult.
+The plugin exists to ensure users fill in the important parts of their profile for tax purposes and to allow better monatization control over individual/company registrations without infringing on PIPEDA and PIPA in British Columbia, Canada. You may want to check with your local privacy act to ensure this plugin complies with it before using.
 
 ---
 
@@ -71,21 +70,9 @@ This enables future features such as:
 
 ---
 
-### 3. Profile Completeness Enforcement
-
-When enabled, logged-in users cannot publish or edit listings unless their profile is complete according to admin-selected rules.
-
-Currently enforceable:
-- Seller Type
-- Region
-- City
-- Address (optional)
-
-If incomplete, the user is redirected to their profile page with a clear error message.
-
 ---
 
-### 4. Automatic Profile Population
+### 3. Automatic Profile Population
 
 Data entered during registration or listing submission is automatically written back to the user profile, including:
 
@@ -99,7 +86,7 @@ This prevents empty or partially completed profiles.
 
 ---
 
-### 5. Fork-Safe Design
+### 4. Fork-Safe Design
 
 Designed to work across Osclass variants:
 
@@ -135,8 +122,7 @@ required_fields_manager/
 ### Listing Publish/Edit
 1. Required fields validated
 2. Seller type validated if enabled
-3. Profile completeness checked
-4. Listing allowed or blocked accordingly
+3. Listing allowed or blocked accordingly
 
 ---
 
@@ -144,8 +130,6 @@ required_fields_manager/
 
 - Configuration UI lives in admin.php only
 - Install, uninstall, and hooks are defined in index.php
-- Duplicate uninstall hooks were removed
-- Blank configure screen issues were fixed by correcting bootstrap logic
 
 ---
 
@@ -164,7 +148,7 @@ required_fields_manager/
 - Flash message handling
 - Safer defaults
 
-### v1.3.0 (Current)
+### v1.3.0
 - Seller Type enforcement
 - Automatic profile population
 - Profile completeness blocking
@@ -175,10 +159,15 @@ required_fields_manager/
 
 ---
 
+### v1.4.0 (Current)
+- Removed Profile completeness blocking to comply with privacy laws
+
+---
+
 ## Known Limitations
 
 - No front-end field injection (theme must provide fields)
-- No pricing logic yet
+- No pricing logic yet unless used with a payment plugin or similiar
 - No database schema changes (uses core tables only)
 
 ---
